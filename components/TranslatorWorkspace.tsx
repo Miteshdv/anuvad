@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LANGUAGES, DEFAULT_SOURCE, DEFAULT_TARGET, languageByCode } from "@/lib/languages";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useTtsPlayback } from "@/hooks/useTtsPlayback";
@@ -83,7 +83,7 @@ export default function TranslatorWorkspace() {
 
   const toastNotice = notice ?? (tts.error ? { kind: "error" as const, text: tts.error } : null);
 
-  const translateTurn = useCallback(async (turnId: string, text: string) => {
+  const translateTurn = async (turnId: string, text: string) => {
     const { sourceLang: from, targetLang: to } = langsRef.current;
     const epoch = epochRef.current;
 
@@ -126,36 +126,33 @@ export default function TranslatorWorkspace() {
       );
       setNotice({ kind: "error", text: message });
     }
-  }, []);
+  };
 
   // Each phrase finalized by speech recognition becomes a translated chat line.
-  const handleFinalSpeech = useCallback(
-    (text: string) => {
-      const trimmed = text.replace(/\s+/g, " ").trim();
-      if (!trimmed) return;
-      setNotice(null);
+  const handleFinalSpeech = (text: string) => {
+    const trimmed = text.replace(/\s+/g, " ").trim();
+    if (!trimmed) return;
+    setNotice(null);
 
-      turnSeqRef.current += 1;
-      const id = `${Date.now()}-${turnSeqRef.current}`;
-      const { sourceLang: from, targetLang: to } = langsRef.current;
+    turnSeqRef.current += 1;
+    const id = `${Date.now()}-${turnSeqRef.current}`;
+    const { sourceLang: from, targetLang: to } = langsRef.current;
 
-      setTurns((prev) => [
-        ...prev,
-        {
-          id,
-          speaker: speakerRef.current.trim() || "Speaker 1",
-          source: trimmed,
-          target: "",
-          sourceLang: languageByCode(from)?.label ?? from,
-          targetLang: languageByCode(to)?.label ?? to,
-          pending: true,
-        },
-      ]);
+    setTurns((prev) => [
+      ...prev,
+      {
+        id,
+        speaker: speakerRef.current.trim() || "Speaker 1",
+        source: trimmed,
+        target: "",
+        sourceLang: languageByCode(from)?.label ?? from,
+        targetLang: languageByCode(to)?.label ?? to,
+        pending: true,
+      },
+    ]);
 
-      void translateTurn(id, trimmed);
-    },
-    [translateTurn],
-  );
+    void translateTurn(id, trimmed);
+  };
 
   const speech = useSpeechRecognition({
     lang: sourceBcp47,
@@ -175,6 +172,7 @@ export default function TranslatorWorkspace() {
   const retryTurn = (id: string) => {
     const turn = turns.find((item) => item.id === id);
     if (!turn) return;
+    if (tts.enabled) tts.unlock();
     setTurns((prev) => prev.map((item) => (item.id === id ? { ...item, pending: true, target: "" } : item)));
     void translateTurn(id, turn.source);
   };
@@ -240,6 +238,7 @@ export default function TranslatorWorkspace() {
       return;
     }
     tts.stop();
+    if (tts.enabled) tts.unlock();
     speech.start();
   };
 
@@ -316,7 +315,13 @@ export default function TranslatorWorkspace() {
             <input
               type="checkbox"
               checked={tts.enabled}
-              onChange={(event) => tts.setEnabled(event.target.checked)}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                ttsEnabledRef.current = enabled;
+                tts.setEnabled(enabled);
+                if (enabled) tts.unlock();
+                else tts.stop();
+              }}
             />
             Auto-play translation
           </label>
@@ -389,6 +394,7 @@ export default function TranslatorWorkspace() {
               className={styles.secondaryButton}
               onClick={() => {
                 if (!draft.trim()) return;
+                if (tts.enabled) tts.unlock();
                 setDraft("");
                 handleFinalSpeech(draft);
               }}
@@ -420,7 +426,7 @@ export default function TranslatorWorkspace() {
                     {turn.pending ? "Translating…" : turn.target}
                   </p>
                   <div className={styles.turnActions}>
-                    <button type="button" className={styles.iconButton} onClick={() => (tts.speaking ? tts.stop() : void tts.speak(turn.target))} disabled={turn.pending || !turn.target} title="Play translation" aria-label="Play translation">▶</button>
+                    <button type="button" className={styles.iconButton} onClick={() => (tts.speaking ? tts.stop() : tts.playFromGesture(turn.target))} disabled={turn.pending || !turn.target} title="Play translation" aria-label="Play translation">▶</button>
                     <button type="button" className={styles.iconButton} onClick={() => retryTurn(turn.id)} disabled={turn.pending} title="Translate again" aria-label="Translate again">↻</button>
                   </div>
                 </div>
@@ -428,7 +434,7 @@ export default function TranslatorWorkspace() {
             ))}
           </div>
           <footer className={styles.panelFoot}>
-            <button type="button" className={styles.playButton} onClick={() => tts.speaking ? tts.stop() : lastTurn?.target ? void tts.speak(lastTurn.target) : undefined} disabled={!lastTurn?.target || busy}>
+            <button type="button" className={styles.playButton} onClick={() => tts.speaking ? tts.stop() : lastTurn?.target ? tts.playFromGesture(lastTurn.target) : undefined} disabled={!lastTurn?.target || busy}>
               {tts.speaking ? "◼ Stop" : "▶ Replay latest"}
             </button>
             <span className={styles.hint}>{tts.error ?? ""}</span>
