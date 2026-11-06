@@ -95,5 +95,6 @@ proxy.ts                  Route protection
 ## Notes
 
 - Speech recognition requires Chrome or Edge; the UI warns on unsupported browsers.
-- Recognition is muted while translated audio plays to avoid feedback loops.
+- Auto-play is enabled by default. Start listening, translate typed text, or enable auto-play to prepare audio playback. If your browser blocks it, use the line's play button or **Replay latest** and allow sound for the site. Turning auto-play off stops automatic audio; you can still play translations manually.
+- Use headphones when listening and speaking to reduce the chance that the microphone picks up translated audio.
 - Without a verified Resend domain, transcripts can only be delivered to the Resend account owner's address.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -50,6 +50,11 @@ export type UseSpeechRecognitionOptions = {
   onFinal: (text: string) => void;
 };
 
+function commitPhrase(text: string, onFinal: UseSpeechRecognitionOptions["onFinal"]) {
+  const phrase = text.replace(/\s+/g, " ").trim();
+  if (phrase) onFinal(phrase);
+}
+
 export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOptions) {
   const supported = useSyncExternalStore(
     subscribeSpeechSupport,
@@ -73,11 +78,6 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
   useEffect(() => {
     onFinalRef.current = onFinal;
   }, [onFinal]);
-
-  const commitPhrase = useCallback((text: string) => {
-    const phrase = text.replace(/\s+/g, " ").trim();
-    if (phrase) onFinalRef.current(phrase);
-  }, []);
 
   useEffect(() => {
     const Ctor = getRecognitionCtor();
@@ -126,7 +126,7 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
         const result = event.results[i];
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          commitPhrase(transcript);
+          commitPhrase(transcript, onFinalRef.current);
         } else {
           pendingInterim += transcript;
         }
@@ -177,14 +177,13 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
       }
       recognitionRef.current = null;
     };
-  }, [commitPhrase]);
+  }, []);
 
   useEffect(() => {
     if (recognitionRef.current) recognitionRef.current.lang = lang;
   }, [lang]);
 
-
-  const start = useCallback(() => {
+  const start = () => {
     const recognition = recognitionRef.current;
     if (!recognition || wantListeningRef.current) return;
     wantListeningRef.current = true;
@@ -198,41 +197,38 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
       setListening(false);
       setError("Could not start speech recognition. Try starting again.");
     }
-  }, []);
+  };
 
-  const stop = useCallback(
-    (commit = true) => {
-      wantListeningRef.current = false;
-      if (restartTimerRef.current !== null) {
-        window.clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
-      setListening(false);
-      const finalText = interimRef.current;
-      interimRef.current = "";
-      setInterim("");
-      if (commit) commitPhrase(finalText);
-      const recognition = recognitionRef.current;
-      if (!recognition) return;
-      flushingRef.current = true;
+  const stop = (commit = true) => {
+    wantListeningRef.current = false;
+    if (restartTimerRef.current !== null) {
+      window.clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    setListening(false);
+    const finalText = interimRef.current;
+    interimRef.current = "";
+    setInterim("");
+    if (commit) commitPhrase(finalText, onFinalRef.current);
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    flushingRef.current = true;
+    try {
+      recognition.stop();
+    } catch {
       try {
-        recognition.stop();
+        recognition.abort();
       } catch {
-        try {
-          recognition.abort();
-        } catch {
-          flushingRef.current = false;
-        }
+        flushingRef.current = false;
       }
-    },
-    [commitPhrase],
-  );
+    }
+  };
 
-  const reset = useCallback(() => {
+  const reset = () => {
     interimRef.current = "";
     setInterim("");
     setError(null);
-  }, []);
+  };
 
   return { supported, listening, interim, error, start, stop, reset };
 }

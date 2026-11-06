@@ -1,81 +1,50 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { TtsPlayback } from "@/lib/ttsPlayback";
 
 export function useTtsPlayback(lang: string, gender: "default" | "female" | "male" = "default") {
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
+  const playerRef = useRef<TtsPlayback | null>(null);
+  const lastRequestRef = useRef<{ text: string; lang: string; gender: typeof gender } | null>(null);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const urlRef = useRef<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const cleanup = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    audioRef.current?.pause();
-    audioRef.current = null;
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
+  const getPlayer = () => {
+    if (!playerRef.current) {
+      playerRef.current = new TtsPlayback({ onSpeakingChange: setSpeaking, onError: setError });
     }
+    return playerRef.current;
+  };
+
+  useEffect(() => () => {
+    playerRef.current?.dispose();
+    playerRef.current = null;
   }, []);
 
-  useEffect(() => cleanup, [cleanup]);
+  const stop = () => {
+    playerRef.current?.stop();
+    lastRequestRef.current = null;
+    setError(null);
+  };
 
-  const stop = useCallback(() => {
-    cleanup();
-    setSpeaking(false);
-  }, [cleanup]);
+  const unlock = () => getPlayer().unlock();
+  const clearError = () => setError(null);
+  const speak = (text: string) => {
+    if (!text.trim()) return Promise.resolve();
+    const request = { text, lang, gender };
+    lastRequestRef.current = request;
+    return getPlayer().speak(request);
+  };
 
-  const clearError = useCallback(() => setError(null), []);
+  const playFromGesture = (text: string) => {
+    const last = lastRequestRef.current;
+    const player = getPlayer();
+    if (last?.text === text && last.lang === lang && last.gender === gender && player.replay()) return;
+    player.stop();
+    player.unlock();
+    void speak(text);
+  };
 
-  const speak = useCallback(
-    async (text: string) => {
-      if (!text.trim()) return;
-      stop();
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setError(null);
-
-      try {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, lang, gender }),
-          signal: controller.signal,
-        });
-
-        if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-          setError(payload?.error ?? `TTS failed (${res.status})`);
-          return;
-        }
-
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        urlRef.current = url;
-
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => setSpeaking(false);
-        audio.onerror = () => {
-          setError("Could not play audio.");
-          setSpeaking(false);
-        };
-
-        setSpeaking(true);
-        await audio.play();
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : "TTS failed");
-        setSpeaking(false);
-      }
-    },
-    [gender, lang, stop],
-  );
-
-  return { speak, stop, speaking, error, enabled, setEnabled, clearError };
+  return { speak, playFromGesture, unlock, stop, speaking, error, enabled, setEnabled, clearError };
 }
