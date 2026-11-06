@@ -15,6 +15,10 @@ type PlaybackEvents = {
   onError: (message: string | null) => void;
 };
 
+type QueueItem = {
+  request: PlaybackOptions | null | undefined;
+};
+
 export class TtsPlayback {
   private audio: HTMLAudioElement | null = null;
   private url: string | null = null;
@@ -22,6 +26,8 @@ export class TtsPlayback {
   private blocked = false;
   private generation = 0;
   private preparing: Promise<void> | null = null;
+  private queue: QueueItem[] = [];
+  private activeRequest: PlaybackOptions | null = null;
   private readonly events: PlaybackEvents;
 
   constructor(events: PlaybackEvents) {
@@ -73,20 +79,56 @@ export class TtsPlayback {
   }
 
   stop() {
+    this.queue = [];
+    this.activeRequest = null;
     this.reset();
     this.events.onSpeakingChange(false);
   }
 
   dispose() {
+    this.queue = [];
+    this.activeRequest = null;
     this.reset();
     this.audio = null;
   }
 
-  async speak({ text, lang, gender }: PlaybackOptions) {
+  // Reserve a place before translation starts, so responses can arrive in any order.
+  reserve() {
+    const item: QueueItem = { request: undefined };
+    this.queue.push(item);
+    return (request: PlaybackOptions | null) => {
+      if (!this.queue.includes(item)) return;
+      item.request = request?.text.trim() ? request : null;
+      this.advance();
+    };
+  }
+
+  private advance() {
+    if (this.activeRequest || this.queue[0]?.request === undefined) return;
+    while (this.queue.length && this.queue[0].request === null) this.queue.shift();
+    const item = this.queue[0];
+    if (!item?.request) return;
+    this.queue.shift();
+    this.activeRequest = item.request;
+    void this.start(item.request);
+  }
+
+  private finish() {
+    this.activeRequest = null;
+    this.advance();
+  }
+
+  speak(request: PlaybackOptions) {
+    this.queue = [];
+    this.activeRequest = request.text.trim() ? request : null;
+    this.events.onError(null);
+    return this.start(request);
+  }
+
+  private async start({ text, lang, gender }: PlaybackOptions) {
     if (!text.trim()) return;
     this.reset(true);
     this.events.onSpeakingChange(false);
-    this.events.onError(null);
     const generation = this.generation;
     const controller = new AbortController();
     this.controller = controller;
@@ -106,6 +148,7 @@ export class TtsPlayback {
         if (current()) {
           this.reset();
           this.events.onError(payload?.error ?? `TTS failed (${res.status})`);
+          this.finish();
         }
         return;
       }
@@ -122,6 +165,7 @@ export class TtsPlayback {
         if (current()) {
           this.reset();
           this.events.onSpeakingChange(false);
+          this.finish();
         }
       };
       audio.onerror = () => {
@@ -129,6 +173,7 @@ export class TtsPlayback {
           this.reset();
           this.events.onSpeakingChange(false);
           this.events.onError("Could not play audio. Use the play button to try again.");
+          this.finish();
         }
       };
 
@@ -144,12 +189,15 @@ export class TtsPlayback {
         this.events.onError(error instanceof Error ? error.message : "TTS failed");
       }
       this.events.onSpeakingChange(false);
+      if (!this.blocked) this.finish();
     }
   }
 
   // A blocked recording is retained so replay can call play() directly in a click handler.
-  replay() {
+  replay(request?: PlaybackOptions) {
     if (!this.blocked || !this.url || !this.audio || !this.controller) return false;
+    if (request && (!this.activeRequest || request.text !== this.activeRequest.text ||
+      request.lang !== this.activeRequest.lang || request.gender !== this.activeRequest.gender)) return false;
     this.blocked = false;
     const audio = this.audio;
     const generation = this.generation;
@@ -167,6 +215,7 @@ export class TtsPlayback {
         } else {
           this.reset();
           this.events.onError(error instanceof Error ? error.message : "Could not play audio.");
+          this.finish();
         }
       });
     } catch (error) {
@@ -177,6 +226,7 @@ export class TtsPlayback {
       } else {
         this.reset();
         this.events.onError(error instanceof Error ? error.message : "Could not play audio.");
+        this.finish();
       }
     }
     return true;
