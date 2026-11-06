@@ -74,6 +74,7 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
   const interimRef = useRef("");
   // Set while stopping the engine intentionally to ignore trailing results.
   const flushingRef = useRef(false);
+  const activeLangRef = useRef(lang);
 
   useEffect(() => {
     onFinalRef.current = onFinal;
@@ -87,7 +88,10 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
-    recognition.lang = "en-US";
+    recognition.lang = activeLangRef.current;
+    let lastActivity = Date.now();
+    let phraseStarted: number | null = null;
+    const finalized = new Set<number>();
 
     const clearRestartTimer = () => {
       if (restartTimerRef.current !== null) {
@@ -102,6 +106,7 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
         restartTimerRef.current = null;
         if (!wantListeningRef.current) return;
         try {
+          recognition.lang = activeLangRef.current;
           recognition.start();
           restartDelayRef.current = 250;
         } catch {
@@ -112,6 +117,10 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
     };
 
     recognition.onstart = () => {
+      lastActivity = Date.now();
+      phraseStarted = null;
+      finalized.clear();
+      flushingRef.current = false;
       clearRestartTimer();
       restartDelayRef.current = 250;
       setListening(true);
@@ -119,19 +128,26 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
     };
 
     recognition.onresult = (event) => {
-      if (flushingRef.current) return;
+      if (flushingRef.current || !wantListeningRef.current) return;
+      lastActivity = Date.now();
 
       let pendingInterim = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const result = event.results[i];
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          commitPhrase(transcript, onFinalRef.current);
+          if (!finalized.has(i)) {
+            finalized.add(i);
+            commitPhrase(transcript, onFinalRef.current);
+            phraseStarted = null;
+          }
         } else {
           pendingInterim += transcript;
         }
       }
       interimRef.current = pendingInterim.trim();
+      if (interimRef.current) phraseStarted ??= Date.now();
+      else phraseStarted = null;
       setInterim(pendingInterim);
     };
 
@@ -157,15 +173,40 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
         return;
       }
 
-      // Browser speech services can end a recognition session between phrases.
-      // Keep the user's listening session active and restart with a short backoff.
+      const pending = interimRef.current;
+      interimRef.current = "";
+      setInterim("");
+      phraseStarted = null;
+      commitPhrase(pending, onFinalRef.current);
       scheduleRestart();
     };
+
+    // Continuous input can stay interim indefinitely, or the browser can stall without onend.
+    const watchdog = window.setInterval(() => {
+      if (!wantListeningRef.current || restartTimerRef.current !== null) return;
+      const now = Date.now();
+      const longPhrase = phraseStarted !== null && now - phraseStarted >= 8000;
+      if (!longPhrase && now - lastActivity < 15000) return;
+      lastActivity = now;
+      phraseStarted = null;
+      const pending = interimRef.current;
+      interimRef.current = "";
+      setInterim("");
+      flushingRef.current = true;
+      commitPhrase(pending, onFinalRef.current);
+      try {
+        recognition.abort();
+      } catch {
+        // The browser may already have ended the stalled session.
+      }
+      scheduleRestart();
+    }, 1000);
 
     recognitionRef.current = recognition;
     return () => {
       wantListeningRef.current = false;
       clearRestartTimer();
+      window.clearInterval(watchdog);
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.onend = null;
@@ -180,6 +221,7 @@ export function useSpeechRecognition({ lang, onFinal }: UseSpeechRecognitionOpti
   }, []);
 
   useEffect(() => {
+    activeLangRef.current = lang;
     if (recognitionRef.current) recognitionRef.current.lang = lang;
   }, [lang]);
 

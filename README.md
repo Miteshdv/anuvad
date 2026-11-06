@@ -94,7 +94,8 @@ proxy.ts                  Route protection
 
 ## Notes
 
-- Speech recognition requires Chrome or Edge; the UI warns on unsupported browsers.
+- Speech recognition requires Chrome or Edge; the UI warns on unsupported browsers. Listening continues across browser recognition sessions. Long, unfinalized phrases are submitted after about eight seconds, and stalled sessions are restarted automatically. Input comes from the microphone, not directly from movie/browser-tab audio.
+- The existing daily limit is 50 translated phrases, so extended movie-length sessions will reach that limit.
 - Auto-play is enabled by default. Start listening, translate typed text, or enable auto-play to prepare audio playback. If your browser blocks it, use the line's play button or **Replay latest** and allow sound for the site. Turning auto-play off stops automatic audio; you can still play translations manually.
 - Use headphones when listening and speaking to reduce the chance that the microphone picks up translated audio.
 - Without a verified Resend domain, transcripts can only be delivered to the Resend account owner's address.
