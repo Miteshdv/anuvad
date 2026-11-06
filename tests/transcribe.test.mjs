@@ -10,7 +10,7 @@ const source = ts.transpileModule(readFileSync(new URL("../app/api/transcribe/ro
 function setup({ authorized = true, key = "test-key", status = 200, throws = false } = {}) {
   const exports = {}, calls = [];
   vm.runInNewContext(source, {
-    exports, Request, Response, File, Blob, FormData, Uint8Array, AbortController, setTimeout, clearTimeout,
+    exports, Request, Response, File, Blob, FormData, Uint8Array, DataView, AbortController, setTimeout, clearTimeout,
     process: { env: { OPENAI_API_KEY: key } },
     require: (name) => name === "next/server" ? { NextResponse: Response } : name === "@/lib/auth"
       ? { auth: async () => authorized ? { user: { id: "user" } } : null }
@@ -69,4 +69,20 @@ test("provider errors are useful and sanitized", async () => {
   }
   const response = await setup({ throws: true }).post(upload());
   assert.equal(response.status, 502); assert.match(await response.text(), /Could not reach/);
+});
+
+test("valid PCM WAV is accepted and malformed WAV never reaches the provider", async () => {
+  const exports = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL("../lib/wav.ts", import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, { exports, Blob });
+  const bytes = new Uint8Array(await exports.encodeWav(new Float32Array(57600), 48000).arrayBuffer());
+  const s = setup();
+  assert.equal((await s.post(upload({ mime: "audio/wav", bytes }))).status, 200);
+  assert.equal(s.calls[0].body.get("file").name, "segment.wav");
+  for (const broken of [bytes.slice(0, 12), bytes.slice(0, -1), bytes.slice(0, 44)]) {
+    const invalid = setup();
+    assert.equal((await invalid.post(upload({ mime: "audio/wav", bytes: broken }))).status, 400);
+    assert.equal(invalid.calls.length, 0);
+  }
 });

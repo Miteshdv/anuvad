@@ -2,15 +2,10 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-const SEGMENT_MS = 4000;
+import { encodeWav } from "@/lib/wav";
+
 const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING = 6;
-const MIME_TYPES = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"];
-
-function recordingMime() {
-  if (typeof MediaRecorder === "undefined") return null;
-  return MIME_TYPES.find((mime) => MediaRecorder.isTypeSupported(mime)) ?? null;
-}
 
 function subscribeSupport(callback: () => void) {
   window.addEventListener("pageshow", callback);
@@ -28,7 +23,7 @@ type Job = { audio: Blob; audioEpoch?: number | null; text?: string; done: boole
 
 export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeechRecognitionOptions) {
   const supported = useSyncExternalStore(subscribeSupport,
-    () => typeof navigator.mediaDevices?.getUserMedia === "function" && recordingMime() !== null, () => true);
+    () => typeof navigator.mediaDevices?.getUserMedia === "function" && typeof AudioContext !== "undefined" && typeof AudioWorkletNode !== "undefined", () => true);
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -59,17 +54,18 @@ export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeech
   const start = () => {
     if (!mountedRef.current || sessionRef.current?.capturing) return;
     sessionRef.current?.stop(false);
-    const mime = recordingMime();
-    if (!navigator.mediaDevices?.getUserMedia || !mime) {
+    if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") {
       setError("Microphone recording is unavailable. Use an up-to-date browser over HTTPS (or localhost).");
       return;
     }
     let capturing = true;
     let stream: MediaStream | null = null;
-    let current: MediaRecorder | null = null;
-    let segmentTimer: number | undefined;
+    let context: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let processor: AudioWorkletNode | null = null;
+    let stopTimer: number | undefined;
+    let segmentAudioEpoch = getAudioEpochRef.current?.();
     let activeRequests = 0;
-    const recorders = new Set<MediaRecorder>();
     const controllers = new Set<AbortController>();
     const timers = new Set<number>();
     const jobs: Job[] = [];
@@ -93,32 +89,38 @@ export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeech
     const updateDraft = () => {
       if (live()) setInterim(capturing ? "Recording audio..." : jobs.length ? "Transcribing audio..." : "");
     };
+    const releaseAudio = () => {
+      clearTimer(stopTimer);
+      if (processor) processor.port.onmessage = null;
+      source?.disconnect();
+      processor?.disconnect();
+      if (context) void context.close().catch(() => {});
+      processor = null;
+      source = null;
+      context = null;
+      releaseMic();
+    };
     const stopCapture = (commit: boolean) => {
+      const wasCapturing = capturing;
       capturing = false;
       session.capturing = false;
-      clearTimer(segmentTimer);
-      if (commit && !stream && recorders.size === 0 && jobs.length === 0) commit = false;
       if (!commit) {
         session.valid = false;
         controllers.forEach((controller) => controller.abort());
         timers.forEach((id) => window.clearTimeout(id));
         timers.clear();
         jobs.length = 0;
-      }
-      for (const recorder of recorders) {
-        if (!commit) {
-          recorder.ondataavailable = null;
-          recorder.onstop = null;
-          recorder.onerror = null;
-          recorder.onpause = null;
-        }
-        if (recorder.state !== "inactive") {
-          if (commit) later(() => { if (recorders.has(recorder)) fail("The browser could not finish recording the final audio segment."); }, 2000);
-          try { recorder.stop(); } catch { /* Release the stream even if the recorder already ended. */ }
+        releaseAudio();
+      } else if (wasCapturing) {
+        if (processor) {
+          stopTimer = later(() => fail("The browser could not finish recording the final audio segment."), 2000);
+          processor.port.postMessage({ type: "stop" });
+          releaseMic();
+        } else {
+          session.valid = false;
+          releaseAudio();
         }
       }
-      if (!commit) recorders.clear();
-      releaseMic();
       if (mountedRef.current) {
         setListening(false);
         if (!commit) setInterim("");
@@ -149,7 +151,7 @@ export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeech
         controllers.add(controller);
         const timeout = later(() => controller.abort(), 30000);
         const form = new FormData();
-        form.append("file", job.audio, mime.startsWith("audio/mp4") ? "segment.mp4" : "segment.webm");
+        form.append("file", job.audio, "segment.wav");
         form.append("language", lang.split("-")[0]);
         void (async () => {
           try {
@@ -172,55 +174,6 @@ export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeech
         })();
       }
     };
-    const beginSegment = () => {
-      if (!live() || !capturing || !stream) return;
-      if (jobs.length + recorders.size >= MAX_PENDING) {
-        fail("Transcription cannot keep up with recording. Pending audio was discarded. Check your connection and start listening again.");
-        return;
-      }
-      try {
-        const recorder = new MediaRecorder(stream, { mimeType: mime });
-        const audioEpoch = getAudioEpochRef.current?.();
-        current = recorder;
-        recorders.add(recorder);
-        const chunks: Blob[] = [];
-        let bytes = 0;
-        let expectedEnd = false;
-        let endTimer: number | undefined;
-        recorder.ondataavailable = (event) => {
-          if (!live()) return;
-          bytes += event.data.size;
-          if (bytes > MAX_AUDIO_BYTES) { fail("Recorded audio exceeded the segment size limit. Start listening again."); return; }
-          if (event.data.size) chunks.push(event.data);
-        };
-        recorder.onerror = () => fail("Microphone recording failed or was interrupted. Start listening again.");
-        recorder.onpause = () => fail("Microphone recording was paused by the browser. Start listening again.");
-        recorder.onstop = () => {
-          clearTimer(endTimer);
-          recorders.delete(recorder);
-          if (!live()) return;
-          if (capturing && !expectedEnd) {
-            fail("Microphone recording ended unexpectedly. Start listening again.");
-            return;
-          }
-          if (bytes) {
-            jobs.push({ audio: new Blob(chunks, { type: recorder.mimeType || mime }), audioEpoch, done: false, started: false });
-          }
-          pump();
-          beginSegment();
-        };
-        // Each fresh recorder produces a complete container, unlike timeslice fragments.
-        recorder.start();
-        segmentTimer = later(() => {
-          if (!live() || !capturing || current !== recorder) return;
-          expectedEnd = true;
-          endTimer = later(() => fail("The browser stopped delivering microphone audio. Start listening again."), 2000);
-          recorder.stop();
-        }, SEGMENT_MS);
-      } catch {
-        fail("Could not start microphone recording. Check microphone access and try again.");
-      }
-    };
     setError(null);
     setListening(true);
     setInterim("Waiting for microphone permission...");
@@ -237,13 +190,45 @@ export function useSpeechRecognition({ lang, onFinal, getAudioEpoch }: UseSpeech
           track.onended = () => fail("Microphone access ended. Start listening again.");
           track.onmute = () => fail("Microphone input was interrupted. Start listening again.");
         });
-        beginSegment();
+        context = new AudioContext();
+        await context.audioWorklet.addModule("/pcm-recorder.js");
+        if (!live() || !capturing) return;
+        source = context.createMediaStreamSource(acquired);
+        processor = new AudioWorkletNode(context, "pcm-recorder", { numberOfInputs: 1, numberOfOutputs: 1 });
+        const sampleRate = context.sampleRate;
+        processor.port.onmessage = ({ data }: MessageEvent<{ type: string; samples?: Float32Array }>) => {
+          if (!live()) return;
+          if (data.type === "stopped") {
+            releaseAudio();
+            updateDraft();
+            return;
+          }
+          if (data.type !== "segment" || !data.samples?.length) return;
+          const audio = encodeWav(data.samples, sampleRate);
+          if (audio.size > MAX_AUDIO_BYTES) {
+            fail("Recorded audio exceeded the segment size limit. Start listening again.");
+            return;
+          }
+          if (jobs.length >= MAX_PENDING) {
+            fail("Transcription cannot keep up with recording. Pending audio was discarded. Check your connection and start listening again.");
+            return;
+          }
+          jobs.push({ audio, audioEpoch: segmentAudioEpoch, done: false, started: false });
+          segmentAudioEpoch = getAudioEpochRef.current?.();
+          pump();
+        };
+        processor.onprocessorerror = () => fail("Microphone audio processing failed. Start listening again.");
+        source.connect(processor);
+        // The processor outputs silence; connecting it keeps capture active without microphone feedback.
+        processor.connect(context.destination);
+        await context.resume();
+        if (!live() || !capturing) return;
         updateDraft();
       } catch (cause) {
         const name = cause instanceof Error ? cause.name : "";
         fail(name === "NotAllowedError" || name === "SecurityError"
           ? "Microphone permission was denied or blocked. Allow microphone access in your browser settings."
-          : "Could not access a microphone. Check that one is connected and not in use by another app.");
+          : "Could not start microphone audio capture. Check microphone access and try again.");
       }
     })();
   };

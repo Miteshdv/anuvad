@@ -12,7 +12,7 @@ Browser-based speech translation. Start listening, speak naturally, and see shor
 | Translation | Google Cloud Translation v2 REST |
 | Text-to-speech | OpenAI `gpt-4o-mini-tts` |
 | Email | Resend |
-| Speech input | MediaRecorder microphone capture + OpenAI `gpt-4o-mini-transcribe` |
+| Speech input | AudioWorklet PCM/WAV microphone capture + OpenAI `gpt-4o-mini-transcribe` |
 
 ## Features
 
@@ -95,7 +95,7 @@ proxy.ts                  Route protection
 
 ## Notes
 
-- Microphone input requires HTTPS (or localhost), microphone permission, getUserMedia and MediaRecorder with MP4 (iPhone) or WebM (Chrome) support. A single microphone stream stays open while fresh recorders produce independently decodable segments of about four seconds. There can be small recording gaps at segment boundaries, words can be split, and text appears only after upload/transcription, not as live word-by-word interim text.
+- Microphone input requires HTTPS (or localhost), microphone permission, getUserMedia, AudioContext and AudioWorklet support. A single continuous audio graph captures mono PCM without restarting the microphone recorder. Every 1.2 seconds, samples are wrapped in an independent 16-bit WAV file with its own RIFF/WAVE header; Stop flushes the remaining partial segment. This avoids WebM/MP4 container fragmentation during longer speech. WAV uploads use more bandwidth (about 96 KB/s at 48 kHz). Words may still cross segment boundaries, and transcription plus translation requires network round trips; this is not zero-latency word-by-word translation.
 - Input comes from the microphone, **not tab/system audio**. Microphone audio (including silence/background sounds) is sent through the authenticated server to OpenAI for paid `gpt-4o-mini-transcribe` processing. The app does not persist audio; OpenAI processing/retention follows your provider account policy. Do not record private conversations without consent.
 - Stop releases the microphone immediately and normally transcribes the final segment. Reset, a new session, language changes, or leaving the page discard pending results. Backgrounding the page stops recording; interruptions require starting again. At most two requests and six pending segments are retained; slow service/backpressure, timeout, or recording failure stops capture with an error rather than silently losing an unbounded backlog. Turning Auto-play off affects playback only.
 - Real iPhone/browser recording behavior still needs device testing. Silence recognition and segment boundaries can affect accuracy; this is not seamless movie-length transcription.
