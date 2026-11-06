@@ -8,7 +8,6 @@ export function useTtsPlayback(lang: string, gender: "default" | "female" | "mal
   const [error, setError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
   const playerRef = useRef<TtsPlayback | null>(null);
-  const lastRequestRef = useRef<{ text: string; lang: string; gender: typeof gender } | null>(null);
 
   const getPlayer = () => {
     if (!playerRef.current) {
@@ -24,27 +23,25 @@ export function useTtsPlayback(lang: string, gender: "default" | "female" | "mal
 
   const stop = () => {
     playerRef.current?.stop();
-    lastRequestRef.current = null;
     setError(null);
   };
 
   const unlock = () => getPlayer().unlock();
   const clearError = () => setError(null);
-  const speak = (text: string) => {
-    if (!text.trim()) return Promise.resolve();
-    const request = { text, lang, gender };
-    lastRequestRef.current = request;
-    return getPlayer().speak(request);
+  const reserve = (targetLang: string) => {
+    const complete = getPlayer().reserve();
+    return (text: string | null) => complete(text ? { text, lang: targetLang, gender } : null);
   };
 
-  const playFromGesture = (text: string) => {
-    const last = lastRequestRef.current;
+  const playFromGesture = (text: string, targetLang = lang) => {
     const player = getPlayer();
-    if (last?.text === text && last.lang === lang && last.gender === gender && player.replay()) return;
+    const request = { text, lang: targetLang, gender };
+    if (player.replay(request)) return false;
     player.stop();
     player.unlock();
-    void speak(text);
+    void player.speak(request);
+    return true;
   };
 
-  return { speak, playFromGesture, unlock, stop, speaking, error, enabled, setEnabled, clearError };
+  return { reserve, playFromGesture, unlock, stop, speaking, error, enabled, setEnabled, clearError };
 }

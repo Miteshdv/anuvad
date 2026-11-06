@@ -1,6 +1,6 @@
 # Anuvad
 
-Browser-based speech translation. Start listening, speak naturally, and see each recognized phrase translated immediately in side-by-side conversation panes. Choose the translated voice, play speech, and email yourself the transcript.
+Browser-based speech translation. Start listening, speak naturally, and see short audio segments transcribed and translated in side-by-side conversation panes after a short delay. Choose the translated voice, play speech, and email yourself the transcript.
 
 ## Stack
 
@@ -12,13 +12,13 @@ Browser-based speech translation. Start listening, speak naturally, and see each
 | Translation | Google Cloud Translation v2 REST |
 | Text-to-speech | OpenAI `gpt-4o-mini-tts` |
 | Email | Resend |
-| Speech input | Browser Web Speech API (Chrome / Edge) |
+| Speech input | MediaRecorder microphone capture + OpenAI `gpt-4o-mini-transcribe` |
 
 ## Features
 
 - Google sign-in; `/translate` is protected by `proxy.ts`.
 - Ten source/target languages with a swap control.
-- Click-to-toggle dictation with live interim text and phrase-by-phrase translation.
+- Click-to-toggle microphone recording with ordered short-segment transcription and translation.
 - Side-by-side source and translated conversation panes, with per-line playback and retry.
 - Selectable default, female-sounding, or male-sounding translated voice and optional auto-play.
 - Daily quota of 50 translations per user, tracked in Postgres.
@@ -45,7 +45,7 @@ Open http://localhost:3000.
 | `AUTH_URL` | `http://localhost:3000` locally; leave unset on Vercel |
 | `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Google Cloud Console → APIs & Services → Credentials → OAuth client |
 | `GOOGLE_TRANSLATE_API_KEY` | Google Cloud Console → Credentials → API key (enable Cloud Translation API) |
-| `OPENAI_API_KEY` | platform.openai.com |
+| `OPENAI_API_KEY` | platform.openai.com; paid microphone transcription and TTS |
 | `RESEND_API_KEY` | resend.com |
 | `TRANSCRIPT_FROM` | Verified sender; `onboarding@resend.dev` works for testing |
 
@@ -72,6 +72,7 @@ app/
   page.tsx                Landing page
   translate/page.tsx      Protected translator page
   api/translate/route.ts  Translation + quota enforcement
+  api/transcribe/route.ts Authenticated OpenAI microphone transcription
   api/tts/route.ts        OpenAI speech synthesis
   api/transcript/route.ts Resend transcript email
   api/usage/route.ts      Current daily usage
@@ -79,7 +80,7 @@ components/
   TranslatorWorkspace.tsx Language pickers, panels, transcript controls
   UserBadge.tsx           Signed-in user + sign out
 hooks/
-  useSpeechRecognition.ts Web Speech API wrapper
+  useSpeechRecognition.ts Continuous mic capture and ordered segment transcription
   useTtsPlayback.ts       Audio playback for synthesized speech
 lib/
   auth.ts                 Auth.js configuration
@@ -94,8 +95,11 @@ proxy.ts                  Route protection
 
 ## Notes
 
-- Speech recognition requires Chrome or Edge; the UI warns on unsupported browsers. Listening continues across browser recognition sessions. Long, unfinalized phrases are submitted after about eight seconds, and stalled sessions are restarted automatically. Input comes from the microphone, not directly from movie/browser-tab audio.
-- The existing daily limit is 50 translated phrases, so extended movie-length sessions will reach that limit.
-- Auto-play is enabled by default. Start listening, translate typed text, or enable auto-play to prepare audio playback. If your browser blocks it, use the line's play button or **Replay latest** and allow sound for the site. Turning auto-play off stops automatic audio; you can still play translations manually.
+- Microphone input requires HTTPS (or localhost), microphone permission, getUserMedia and MediaRecorder with MP4 (iPhone) or WebM (Chrome) support. A single microphone stream stays open while fresh recorders produce independently decodable segments of about four seconds. There can be small recording gaps at segment boundaries, words can be split, and text appears only after upload/transcription, not as live word-by-word interim text.
+- Input comes from the microphone, **not tab/system audio**. Microphone audio (including silence/background sounds) is sent through the authenticated server to OpenAI for paid `gpt-4o-mini-transcribe` processing. The app does not persist audio; OpenAI processing/retention follows your provider account policy. Do not record private conversations without consent.
+- Stop releases the microphone immediately and normally transcribes the final segment. Reset, a new session, language changes, or leaving the page discard pending results. Backgrounding the page stops recording; interruptions require starting again. At most two requests and six pending segments are retained; slow service/backpressure, timeout, or recording failure stops capture with an error rather than silently losing an unbounded backlog. Turning Auto-play off affects playback only.
+- Real iPhone/browser recording behavior still needs device testing. Silence recognition and segment boundaries can affect accuracy; this is not seamless movie-length transcription.
+- The existing daily limit is **50 translated phrases**, unchanged. Each nonempty segment may count as a phrase; extended sessions reach the cap quickly. This translation quota is not a transcription billing limit: recording/transcription can incur costs even for silence or failed translations. Stop recording when not needed.
+- Auto-play is enabled by default. Translated phrases play in conversation order, even if translations finish out of order. Manual line playback replaces current and queued audio; Stop, reset, and disabling auto-play cancel it. Transcripts still receive pending microphone segments after Stop, but their audio does not automatically play. Start listening, translate typed text, or enable auto-play to prepare audio playback. If the browser blocks playback, the queue waits: use the blocked line's play button to resume, or choose another line to replace it. Allow sound for the site. Translations can still be played manually with auto-play off.
 - Use headphones when listening and speaking to reduce the chance that the microphone picks up translated audio.
 - Without a verified Resend domain, transcripts can only be delivered to the Resend account owner's address.
