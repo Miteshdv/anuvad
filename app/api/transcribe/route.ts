@@ -4,7 +4,7 @@ import { languageByCode } from "@/lib/languages";
 
 const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 const MAX_BODY_BYTES = MAX_AUDIO_BYTES + 16 * 1024;
-const AUDIO_TYPES = new Set(["audio/webm", "audio/mp4"]);
+const AUDIO_TYPES = new Set(["audio/webm", "audio/mp4", "audio/wav"]);
 
 function error(message: string, status: number) {
   return NextResponse.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
@@ -51,16 +51,34 @@ export async function POST(request: Request) {
   if (!(file instanceof File) || file.size === 0) return error("A nonempty audio file is required.", 400);
   if (file.size > MAX_AUDIO_BYTES) return error("Audio file is too large (maximum 2 MiB).", 413);
   const mime = file.type.split(";")[0].trim().toLowerCase();
-  if (!AUDIO_TYPES.has(mime)) return error("Unsupported audio format. Use MP4 or WebM audio.", 415);
+  if (!AUDIO_TYPES.has(mime)) return error("Unsupported audio format. Use WAV, MP4 or WebM audio.", 415);
   if (typeof language !== "string" || !languageByCode(language)) return error("Unsupported transcription language.", 400);
 
   const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
   const webm = header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3;
   const mp4 = header[4] === 0x66 && header[5] === 0x74 && header[6] === 0x79 && header[7] === 0x70;
-  if (!(mime === "audio/webm" ? webm : mp4)) return error("Invalid audio container. Record a new segment.", 400);
+  const wav = header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46
+    && header[8] === 0x57 && header[9] === 0x41 && header[10] === 0x56 && header[11] === 0x45;
+  if (!(mime === "audio/wav" ? wav : mime === "audio/webm" ? webm : mp4)) {
+    return error("Invalid audio container. Record a new segment.", 400);
+  }
+  if (mime === "audio/wav") {
+    const bytes = await file.arrayBuffer();
+    const view = new DataView(bytes);
+    const tag = (offset: number, text: string) => [...text].every((char, i) => view.getUint8(offset + i) === char.charCodeAt(0));
+    if (bytes.byteLength <= 44 || !tag(12, "fmt ") || !tag(36, "data")
+      || view.getUint32(4, true) !== bytes.byteLength - 8 || view.getUint32(16, true) !== 16
+      || view.getUint16(20, true) !== 1 || view.getUint16(22, true) !== 1
+      || view.getUint16(32, true) !== 2 || view.getUint16(34, true) !== 16
+      || view.getUint32(24, true) < 8000 || view.getUint32(24, true) > 192000
+      || view.getUint32(28, true) !== view.getUint32(24, true) * 2
+      || view.getUint32(40, true) !== bytes.byteLength - 44 || (bytes.byteLength - 44) % 2 !== 0) {
+      return error("Invalid WAV audio data. Record a new segment.", 400);
+    }
+  }
 
   const upload = new FormData();
-  upload.append("file", file, mime === "audio/mp4" ? "segment.mp4" : "segment.webm");
+  upload.append("file", file, mime === "audio/wav" ? "segment.wav" : mime === "audio/mp4" ? "segment.mp4" : "segment.webm");
   upload.append("model", "gpt-4o-mini-transcribe");
   upload.append("language", language);
   const controller = new AbortController();

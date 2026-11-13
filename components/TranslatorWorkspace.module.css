@@ -229,6 +229,31 @@
   }
 }
 
+.editor {
+  flex: 1;
+  width: 100%;
+  min-height: 280px;
+  height: 100%;
+  resize: none;
+  padding: 18px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.editor::placeholder {
+  color: var(--muted);
+}
+
+.translationEditor {
+  color: var(--ok);
+}
+
 .transcript {
   flex: 1;
   display: flex;
