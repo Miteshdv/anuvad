@@ -14,7 +14,7 @@ function setup({ authorized = true, key = "test-key", status = 200, throws = fal
     process: { env: { OPENAI_API_KEY: key } },
     require: (name) => name === "next/server" ? { NextResponse: Response } : name === "@/lib/auth"
       ? { auth: async () => authorized ? { user: { id: "user" } } : null }
-      : { languageByCode: (code) => ["en", "hi"].includes(code) },
+      : { languageByCode: (code) => ["en", "hi"].includes(code) ? { label: code === "hi" ? "Hindi" : "English" } : undefined },
     fetch: async (url, options) => {
       calls.push({ url, ...options });
       if (throws) throw new Error("sensitive upstream diagnostics");
@@ -44,6 +44,8 @@ test("WebM and MP4 uploads forward multipart model, language and audio with no m
     const call = s.calls[0];
     assert.equal(call.url, "https://api.openai.com/v1/audio/transcriptions");
     assert.equal(call.body.get("model"), "gpt-4o-mini-transcribe"); assert.equal(call.body.get("language"), "hi");
+    assert.match(call.body.get("prompt"), /only speech in Hindi/);
+    assert.match(call.body.get("prompt"), /no text for silence/);
     assert.equal(call.headers.Authorization, "Bearer test-key"); assert.equal(call.headers["Content-Type"], undefined);
     assert.equal(response.headers.get("cache-control"), "no-store");
   }

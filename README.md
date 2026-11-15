@@ -1,6 +1,6 @@
 # Anuvad
 
-Browser-based speech translation. Start listening, speak naturally, and see short audio segments transcribed and translated in side-by-side conversation panes after a short delay. Choose the translated voice, play speech, and email yourself the transcript.
+Browser-based speech translation. Start listening, speak naturally, and see speech transcribed in the source pane. Review or edit the text, click **Translate**, and click **Replay latest** to hear the result. Typing and speech never trigger translation or playback automatically. Choose the translated voice, play speech, and email yourself the transcript.
 
 ## Stack
 
@@ -18,9 +18,9 @@ Browser-based speech translation. Start listening, speak naturally, and see shor
 
 - Google sign-in; `/translate` is protected by `proxy.ts`.
 - Ten source/target languages with a swap control.
-- Click-to-toggle microphone recording with ordered short-segment transcription and translation.
-- Side-by-side source and translated conversation panes, with per-line playback and retry.
-- Selectable default, female-sounding, or male-sounding translated voice and optional auto-play.
+- Click-to-toggle microphone recording with ordered short-segment transcription; translation runs only on clicking **Translate**.
+- Side-by-side editable source and translated text panes, with manual playback.
+- Selectable default, female-sounding, or male-sounding translated voice and manual playback only.
 - Daily quota of 50 translations per user, tracked in Postgres.
 - "Send transcript" emails the full conversation to the signed-in user.
 
@@ -95,11 +95,10 @@ proxy.ts                  Route protection
 
 ## Notes
 
-- Microphone input requires HTTPS (or localhost), microphone permission, getUserMedia, AudioContext and AudioWorklet support. A single continuous audio graph captures mono PCM without restarting the microphone recorder. Every 1.2 seconds, samples are wrapped in an independent 16-bit WAV file with its own RIFF/WAVE header; Stop flushes the remaining partial segment. This avoids WebM/MP4 container fragmentation during longer speech. WAV uploads use more bandwidth (about 96 KB/s at 48 kHz). Words may still cross segment boundaries, and transcription plus translation requires network round trips; this is not zero-latency word-by-word translation.
-- Input comes from the microphone, **not tab/system audio**. Microphone audio (including silence/background sounds) is sent through the authenticated server to OpenAI for paid `gpt-4o-mini-transcribe` processing. The app does not persist audio; OpenAI processing/retention follows your provider account policy. Do not record private conversations without consent.
-- Stop releases the microphone immediately and normally transcribes the final segment. Reset, a new session, language changes, or leaving the page discard pending results. Backgrounding the page stops recording; interruptions require starting again. At most two requests and six pending segments are retained; slow service/backpressure, timeout, or recording failure stops capture with an error rather than silently losing an unbounded backlog. Turning Auto-play off affects playback only.
-- Real iPhone/browser recording behavior still needs device testing. Silence recognition and segment boundaries can affect accuracy; this is not seamless movie-length transcription.
-- The existing daily limit is **50 translated phrases**, unchanged. Each nonempty segment may count as a phrase; extended sessions reach the cap quickly. This translation quota is not a transcription billing limit: recording/transcription can incur costs even for silence or failed translations. Stop recording when not needed.
-- Auto-play is enabled by default. Translated phrases play in conversation order, even if translations finish out of order. Manual line playback replaces current and queued audio; Stop, reset, and disabling auto-play cancel it. Transcripts still receive pending microphone segments after Stop, but their audio does not automatically play. Start listening, translate typed text, or enable auto-play to prepare audio playback. If the browser blocks playback, the queue waits: use the blocked line's play button to resume, or choose another line to replace it. Allow sound for the site. Translations can still be played manually with auto-play off.
-- Use headphones when listening and speaking to reduce the chance that the microphone picks up translated audio.
+- Microphone input requires HTTPS (or localhost), microphone permission, getUserMedia, AudioContext and AudioWorklet support. Mono PCM is captured continuously and packaged into independent 16-bit WAV segments every 1.2 seconds. Stop flushes the final segment. Activity is measured in 20 ms windows; segments with less than 80 ms of activity are discarded unless they continue speech across a segment boundary to reduce invented text during silence. This is an amplitude gate, not perfect speech detection: noise can pass it, and very quiet speech can be skipped.
+- Input comes from the microphone, **not tab/system audio**. Accepted audio segments are sent through the authenticated server to OpenAI for paid transcription. Audio is not persisted by the app; provider retention follows your account policy. Obtain consent before recording private conversations.
+- Stop releases the microphone and normally transcribes the final segment. Clear, a new session, language changes, or leaving the page discard pending results. Backgrounding stops capture. At most two requests and six pending segments are retained; slow service or recording failure stops capture with an error.
+- Translation is manual: review the source, then click **Translate**. Editing the source or changing languages invalidates the displayed translation and cancels an in-flight request. Each explicit request counts toward the 50-translations-per-day quota. This is not a transcription billing limit.
+- Playback is manual only. Click **Replay latest** to read the translated text, or **Stop** to cancel playback. The speech service is instructed to read only the provided text, without translating or appending other languages. Model output still requires real-device listening checks.
+- Use headphones to prevent translated audio from being recorded by the microphone. Real iPhone/browser behavior and transcription accuracy still need device testing; words can cross segment boundaries.
 - Without a verified Resend domain, transcripts can only be delivered to the Resend account owner's address.

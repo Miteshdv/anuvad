@@ -25,7 +25,10 @@ export default function TranslatorWorkspace() {
   const [speaker, setSpeaker] = useState("");
   const [voiceGender, setVoiceGender] = useState<"default" | "female" | "male">("default");
   const [draft, setDraft] = useState("");
-  const [translatedDraft, setTranslatedDraft] = useState("");
+  const [translation, setTranslation] = useState<{ text: string; source: string; from: string; to: string } | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const translatedDraft = translation?.source === draft.trim() && translation.from === sourceLang && translation.to === targetLang
+    ? translation.text : "";
   const [turns, setTurns] = useState<Turn[]>([]);
   const [used, setUsed] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
@@ -50,17 +53,12 @@ export default function TranslatorWorkspace() {
   const sourceBcp47 = languageByCode(sourceLang)?.bcp47 ?? "en-US";
 
   const tts = useTtsPlayback(targetLang, voiceGender);
-  const { enabled: ttsEnabled } = tts;
 
   const speakerRef = useRef(speaker);
   const langsRef = useRef({ sourceLang, targetLang });
-  const ttsEnabledRef = useRef(ttsEnabled);
   const audioEpochRef = useRef(0);
   const turnSeqRef = useRef(0);
-  const epochRef = useRef(0);
-  const translationsRef = useRef(new Set<AbortController>());
   const draftControllerRef = useRef<AbortController | null>(null);
-  const draftTranslateTimerRef = useRef<number | null>(null);
   const sourceScrollRef = useRef<HTMLTextAreaElement | null>(null);
   const targetScrollRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -72,14 +70,8 @@ export default function TranslatorWorkspace() {
     langsRef.current = { sourceLang, targetLang };
   }, [sourceLang, targetLang]);
 
-  useEffect(() => {
-    ttsEnabledRef.current = ttsEnabled;
-  }, [ttsEnabled]);
-
   useEffect(() => () => {
-    epochRef.current += 1;
-    translationsRef.current.forEach((controller) => controller.abort());
-    translationsRef.current.clear();
+    draftControllerRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -90,13 +82,13 @@ export default function TranslatorWorkspace() {
 
   const toastNotice = notice ?? (tts.error ? { kind: "error" as const, text: tts.error } : null);
 
-  // Each phrase finalized by speech recognition becomes a translated chat line.
+  // Speech only updates the source; translation requires an explicit click.
   const handleFinalSpeech = (text: string) => {
     const trimmed = text.replace(/\s+/g, " ").trim();
     if (!trimmed) return;
     setNotice(null);
     setDraft((current) => {
-      const separator = current && !/[,.!?]\s*$/.test(current) ? " " : "";
+      const separator = current && !/\s$/.test(current) ? " " : "";
       return `${current}${separator}${trimmed}`.trimStart();
     });
 
@@ -120,51 +112,46 @@ export default function TranslatorWorkspace() {
 
   };
 
-  useEffect(() => {
-    const text = draft.trim();
-    if (draftTranslateTimerRef.current !== null) window.clearTimeout(draftTranslateTimerRef.current);
+  useEffect(() => () => {
     draftControllerRef.current?.abort();
-    if (!text) {
-      draftTranslateTimerRef.current = window.setTimeout(() => setTranslatedDraft(""), 0);
-      return;
-    }
-
-    const hasEndingPunctuation = /[.!?]$/.test(text);
-    draftTranslateTimerRef.current = window.setTimeout(() => {
-      const controller = new AbortController();
-      draftControllerRef.current = controller;
-      void (async () => {
-        try {
-          const { sourceLang: from, targetLang: to } = langsRef.current;
-          const res = await fetch("/api/translate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, from, to }),
-            signal: controller.signal,
-          });
-          const payload = await res.json().catch(() => null) as
-            | { translated?: string; used?: number; limit?: number; error?: string }
-            | null;
-          if (controller.signal.aborted) return;
-          if (!res.ok || !payload?.translated) throw new Error(payload?.error ?? "Translation failed");
-          setTranslatedDraft(payload.translated);
-          if (typeof payload.used === "number") setUsed(payload.used);
-          if (typeof payload.limit === "number") setLimit(payload.limit);
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          setNotice({ kind: "error", text: error instanceof Error ? error.message : "Translation failed" });
-        }
-      })();
-    }, hasEndingPunctuation ? 120 : 350);
-
-    return () => {
-      if (draftTranslateTimerRef.current !== null) window.clearTimeout(draftTranslateTimerRef.current);
-    };
   }, [draft, sourceLang, targetLang]);
+
+  const translateDraft = async () => {
+    const text = draft.trim();
+    if (!text || used >= limit || translating) return;
+    draftControllerRef.current?.abort();
+    const controller = new AbortController();
+    draftControllerRef.current = controller;
+    const from = sourceLang;
+    const to = targetLang;
+    setTranslating(true);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, from, to }),
+        signal: controller.signal,
+      });
+      const payload = await res.json().catch(() => null) as
+        | { translated?: string; used?: number; limit?: number; error?: string }
+        | null;
+      if (controller.signal.aborted) return;
+      if (!res.ok || !payload?.translated) throw new Error(payload?.error ?? "Translation failed");
+      setTranslation({ text: payload.translated, source: text, from, to });
+      if (typeof payload.used === "number") setUsed(payload.used);
+      if (typeof payload.limit === "number") setLimit(payload.limit);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : "Translation failed" });
+      }
+    } finally {
+      if (draftControllerRef.current === controller) setTranslating(false);
+    }
+  };
 
   const speech = useSpeechRecognition({
     lang: sourceBcp47,
-    getAudioEpoch: () => ttsEnabledRef.current ? audioEpochRef.current : null,
     onFinal: (text) => handleFinalSpeech(text),
   });
 
@@ -178,14 +165,12 @@ export default function TranslatorWorkspace() {
   };
 
   const clearAll = () => {
-    epochRef.current += 1;
-    translationsRef.current.forEach((controller) => controller.abort());
-    translationsRef.current.clear();
+    draftControllerRef.current?.abort();
     speech.reset();
     speech.stop(false);
     stopAudio();
     setDraft("");
-    setTranslatedDraft("");
+    setTranslation(null);
     setTurns([]);
     setNotice(null);
   };
@@ -194,7 +179,7 @@ export default function TranslatorWorkspace() {
     setSourceLang(targetLang);
     setTargetLang(sourceLang);
     setDraft("");
-    setTranslatedDraft("");
+    setTranslation(null);
   };
 
   const sendTranscript = async () => {
@@ -243,7 +228,7 @@ export default function TranslatorWorkspace() {
 
   const atLimit = used >= limit;
   const liveDraft = speech.interim;
-  const busy = turns.some((turn) => turn.pending);
+  const busy = translating;
 
   useEffect(() => {
     sourceScrollRef.current?.scrollTo({ top: sourceScrollRef.current.scrollHeight, behavior: "smooth" });
@@ -257,7 +242,6 @@ export default function TranslatorWorkspace() {
       return;
     }
     stopAudio();
-    if (tts.enabled) tts.unlock();
     speech.start();
   };
 
@@ -330,20 +314,7 @@ export default function TranslatorWorkspace() {
               <option value="male">Male</option>
             </select>
           </label>
-          <label className={styles.toggle}>
-            <input
-              type="checkbox"
-              checked={tts.enabled}
-              onChange={(event) => {
-                const enabled = event.target.checked;
-                ttsEnabledRef.current = enabled;
-                tts.setEnabled(enabled);
-                if (enabled) tts.unlock();
-                else stopAudio();
-              }}
-            />
-            Auto-play translation
-          </label>
+
 
           <button
             type="button"
@@ -401,7 +372,7 @@ export default function TranslatorWorkspace() {
             ref={(node) => { targetScrollRef.current = node; }}
             value={translatedDraft}
             readOnly
-            placeholder={busy ? "Translating…" : "Translation appears here as you type or speak."}
+            placeholder={busy ? "Translating…" : "Click Translate when your source text is ready."}
             dir={targetLang === "ar" ? "rtl" : "ltr"}
             aria-label="Translated text"
           />
@@ -416,10 +387,11 @@ export default function TranslatorWorkspace() {
 
       <div className={styles.chatFoot}>
         <span className={styles.hint}>
-          {atLimit ? "Daily limit reached" : speech.listening ? "Listening live — spoken text is transcribed in short segments and translated as it appears." : `${draft.length} characters · ${used}/${limit} translations today`}
+          {atLimit ? "Daily limit reached" : speech.listening ? "Listening — speech updates the source only. Click Translate when ready." : `${draft.length} characters · ${used}/${limit} translations today`}
         </span>
         <div className={styles.footerActions}>
-          <button type="button" className={styles.secondaryButton} onClick={() => { speech.reset(); setDraft(""); setTranslatedDraft(""); setNotice(null); }} disabled={!draft && !speech.interim}>Clear text</button>
+          <button type="button" className={styles.primaryButton} onClick={() => { void translateDraft(); }} disabled={!draft.trim() || translating || atLimit}>{translating ? "Translating…" : "Translate"}</button>
+          <button type="button" className={styles.secondaryButton} onClick={() => { speech.reset(); setDraft(""); setTranslation(null); setNotice(null); }} disabled={!draft && !speech.interim}>Clear text</button>
           <button type="button" className={styles.secondaryButton} onClick={clearAll} disabled={turns.length === 0 && !draft && !speech.interim}>Clear all</button>
           <button type="button" className={styles.primaryButton} onClick={sendTranscript} disabled={!draft.trim() || !translatedDraft.trim() || sending}>{sending ? "Sending…" : "Send transcript"}</button>
         </div>

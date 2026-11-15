@@ -26,7 +26,7 @@ test("continuous worklet keeps every frame across long speech and flushes its fi
     registerProcessor: (_name, processor) => { Processor = processor; },
   });
   const processor = new Processor();
-  const frames = 48000 * 30 + 71;
+  const frames = 48000 * 30 + 12000;
   for (let offset = 0; offset < frames; offset += 128) {
     const input = Float32Array.from({ length: Math.min(128, frames - offset) }, (_, i) => ((offset + i) % 100) / 100);
     assert.equal(processor.process([[input, input]]), true);
@@ -42,4 +42,41 @@ test("continuous worklet keeps every frame across long speech and flushes its fi
   }
   assert.equal(messages.filter((message) => message.type === "stopped").length, 1);
   assert.equal(processor.process([]), false);
+});
+
+test("silence, low background noise, and tiny stop tails are not submitted", () => {
+  let Processor;
+  const messages = [];
+  vm.runInNewContext(readFileSync(new URL("../public/pcm-recorder.js", import.meta.url), "utf8"), {
+    sampleRate: 48000,
+    AudioWorkletProcessor: class { port = { postMessage: (data) => messages.push(data) }; },
+    registerProcessor: (_name, processor) => { Processor = processor; },
+  });
+  for (const samples of [new Float32Array(57600), new Float32Array(57600).fill(0.002), new Float32Array(100).fill(0.1)]) {
+    const processor = new Processor();
+    processor.process([[samples]]);
+    processor.port.onmessage({ data: { type: "stop" } });
+  }
+  assert.equal(messages.filter((m) => m.type === "segment").length, 0);
+  assert.equal(messages.filter((m) => m.type === "stopped").length, 3);
+});
+
+test("short speech survives surrounding silence and voiced continuation tails are retained", () => {
+  let Processor;
+  const messages = [];
+  vm.runInNewContext(readFileSync(new URL("../public/pcm-recorder.js", import.meta.url), "utf8"), {
+    sampleRate: 48000,
+    AudioWorkletProcessor: class { port = { postMessage: (data) => messages.push(data) }; },
+    registerProcessor: (_name, processor) => { Processor = processor; },
+  });
+  const voiced = (length) => Float32Array.from({ length }, (_, i) => 0.02 * Math.sin(2 * Math.PI * 200 * i / 48000));
+  const short = new Float32Array(57600);
+  short.set(voiced(9600), 4800);
+  new Processor().process([[short]]);
+  assert.equal(messages.filter((m) => m.type === "segment").length, 1);
+  messages.length = 0;
+  const processor = new Processor();
+  processor.process([[voiced(59520)]]);
+  processor.port.onmessage({ data: { type: "stop" } });
+  assert.equal(messages.filter((m) => m.type === "segment").reduce((sum, m) => sum + m.samples.length, 0), 59520);
 });

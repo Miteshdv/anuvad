@@ -81,6 +81,7 @@ export async function POST(request: Request) {
   upload.append("file", file, mime === "audio/wav" ? "segment.wav" : mime === "audio/mp4" ? "segment.mp4" : "segment.webm");
   upload.append("model", "gpt-4o-mini-transcribe");
   upload.append("language", language);
+  upload.append("prompt", `Transcribe only speech in ${languageByCode(language)!.label}. Preserve the spoken words without translating. Do not add words, closing phrases, or other languages that are not audible. Return no text for silence or background noise.`);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   request.signal.addEventListener("abort", cancel, { once: true });

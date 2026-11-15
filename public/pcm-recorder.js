@@ -4,6 +4,7 @@ class PcmRecorder extends AudioWorkletProcessor {
     this.samples = new Float32Array(Math.round(sampleRate * 1.2));
     this.offset = 0;
     this.stopped = false;
+    this.speechAtBoundary = false;
     this.port.onmessage = ({ data }) => {
       if (data?.type !== "stop" || this.stopped) return;
       this.stopped = true;
@@ -15,8 +16,22 @@ class PcmRecorder extends AudioWorkletProcessor {
   flush() {
     if (!this.offset) return;
     const samples = this.samples.slice(0, this.offset);
-    this.port.postMessage({ type: "segment", samples }, [samples.buffer]);
     this.offset = 0;
+    const windowSize = Math.round(sampleRate * 0.02);
+    let activeSamples = 0;
+    let lastWindowActive = false;
+    for (let offset = 0; offset < samples.length; offset += windowSize) {
+      const end = Math.min(offset + windowSize, samples.length);
+      let energy = 0;
+      for (let i = offset; i < end; i++) energy += samples[i] * samples[i];
+      lastWindowActive = Math.sqrt(energy / (end - offset)) >= 0.008;
+      if (lastWindowActive) activeSamples += end - offset;
+    }
+    // Keep short voiced tails when they continue speech across a boundary.
+    const hasSpeech = activeSamples >= sampleRate * 0.08 || (this.speechAtBoundary && activeSamples > 0);
+    this.speechAtBoundary = lastWindowActive;
+    if (!hasSpeech) return;
+    this.port.postMessage({ type: "segment", samples }, [samples.buffer]);
   }
 
   process(inputs) {

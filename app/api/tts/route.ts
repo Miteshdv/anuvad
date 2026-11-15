@@ -65,7 +65,7 @@ export async function POST(request: Request) {
         voice: gender === "default" ? DEFAULT_VOICES[lang] ?? "alloy" : GENDER_VOICES[gender],
         input: text,
         response_format: "mp3",
-        instructions: `Speak clearly and naturally in ${languageByCode(lang)!.label}.`,
+        instructions: `Read only the provided text, clearly and naturally in ${languageByCode(lang)!.label}. Do not translate it or add words, commentary, closing phrases, or speech in any other language. Stop when the provided text ends.`,
       }),
       cache: "no-store",
     });
